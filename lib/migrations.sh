@@ -1,0 +1,99 @@
+#!/bin/bash
+# lib/migrations.sh - Database migrations
+
+generate_migrations() {
+  info "Database migrations"
+
+  mkdir -p "$PROJECT_PATH/backend/migrations"
+  mkdir -p "$PROJECT_PATH/backend/seeds"
+
+  # Migration template
+  cat > "$PROJECT_PATH/backend/migrations/001_initial.sql" << 'EOF'
+-- Initial migration
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_users_email ON users(email);
+EOF
+  log "backend/migrations/001_initial.sql"
+
+  # Seed script
+  cat > "$PROJECT_PATH/backend/seeds/seed.sql" << 'EOF'
+-- Seed data
+INSERT INTO users (email, name, password_hash) VALUES
+    ('admin@example.com', 'Admin', '$2a$10$abcdefghijklmnopqrstuuHash'),
+    ('user@example.com', 'User', '$2a$10$abcdefghijklmnopqrstuuHash');
+EOF
+  log "backend/seeds/seed.sql"
+
+  # Migration runner
+  cat > "$PROJECT_PATH/scripts/migrate.sh" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+DB_URL=${DATABASE_URL:-"postgres://admin:password123@localhost:5432/myapp?sslmode=disable"}
+
+echo "Running migrations..."
+
+for migration in backend/migrations/*.sql; do
+  if [ -f "$migration" ]; then
+    echo "Applying: $migration"
+    psql "$DB_URL" -f "$migration"
+  fi
+done
+
+echo "Migrations complete!"
+EOF
+  chmod +x "$PROJECT_PATH/scripts/migrate.sh"
+  log "scripts/migrate.sh"
+
+  # Backup script
+  cat > "$PROJECT_PATH/scripts/backup.sh" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="backups"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/backup_$TIMESTAMP.sql.gz"
+
+mkdir -p "$BACKUP_DIR"
+
+echo "Creating backup..."
+pg_dump $DATABASE_URL | gzip > "$BACKUP_FILE"
+
+echo "Backup created: $BACKUP_FILE"
+EOF
+  chmod +x "$PROJECT_PATH/scripts/backup.sh"
+  log "scripts/backup.sh"
+
+  # Restore script
+  cat > "$PROJECT_PATH/scripts/restore.sh" << 'EOF'
+#!/bin/bash
+set -euo pipefail
+
+if [ -z "$1" ]; then
+  echo "Usage: $0 <backup_file>"
+  exit 1
+fi
+
+BACKUP_FILE="$1"
+
+if [ ! -f "$BACKUP_FILE" ]; then
+  echo "Backup file not found: $BACKUP_FILE"
+  exit 1
+fi
+
+echo "Restoring from: $BACKUP_FILE"
+gunzip -c "$BACKUP_FILE" | psql $DATABASE_URL
+
+echo "Restore complete!"
+EOF
+  chmod +x "$PROJECT_PATH/scripts/restore.sh"
+  log "scripts/restore.sh"
+}
