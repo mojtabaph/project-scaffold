@@ -233,6 +233,7 @@ EOF
 }
 
 generate_rust_backend() {
+  mkdir -p "$PROJECT_PATH/backend/src"
   cat > "$PROJECT_PATH/backend/Cargo.toml" << EOF
 [package]
 name = "$PROJECT_NAME"

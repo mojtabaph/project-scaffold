@@ -1,5 +1,6 @@
 #!/bin/bash
 # test-generator.sh - test all selection combinations (without docker build)
+# Super heavy tests with negative validation
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,34 +18,136 @@ cleanup() { rm -rf "$TEST_DIR" 2>/dev/null || true; }
 check_project() {
   local label="$1" eb="$2" ed="$3" er="$4" en="$5"
   local before=$FAIL
+
+  # =========================================================================
+  # CORE FILES
+  # =========================================================================
   for f in docker-compose.yml README.md STACK.md AGENTS.md brief/README.md .env.example .gitignore scripts/test.sh; do
     if [ -f "$TEST_DIR/$f" ]; then pass "[$label] File: $f"; else fail "[$label] File: $f (missing)"; fi
   done
   grep -q "## Selections" "$TEST_DIR/STACK.md" 2>/dev/null && pass "[$label] STACK.md: Selections" || fail "[$label] STACK.md: Selections missing"
+
+  # =========================================================================
+  # BACKEND-SPECIFIC POSITIVE TESTS
+  # =========================================================================
   if [ "$eb" = "go" ]; then
     grep -q "go 1.23" "$TEST_DIR/backend/go.mod" 2>/dev/null && pass "[$label] go.mod 1.23" || fail "[$label] go.mod 1.23 missing"
+    [ -f "$TEST_DIR/backend/main.go" ] && pass "[$label] go: main.go" || fail "[$label] go: main.go missing"
+    [ -f "$TEST_DIR/backend/main_test.go" ] && pass "[$label] go: main_test.go" || fail "[$label] go: main_test.go missing"
+    [ -f "$TEST_DIR/backend/.golangci.yml" ] && pass "[$label] go: .golangci.yml" || fail "[$label] go: .golangci.yml missing"
   fi
-  if [ -n "$ed" ] && [ "$ed" != "none" ]; then
-    grep -q "$ed" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] DB $ed" || fail "[$label] DB $ed missing"
+  if [ "$eb" = "nodejs" ]; then
+    [ -f "$TEST_DIR/backend/package.json" ] && pass "[$label] nodejs: package.json" || fail "[$label] nodejs: package.json missing"
+    [ -f "$TEST_DIR/backend/index.js" ] && pass "[$label] nodejs: index.js" || fail "[$label] nodejs: index.js missing"
+    [ -f "$TEST_DIR/backend/jest.config.js" ] && pass "[$label] nodejs: jest.config.js" || fail "[$label] nodejs: jest.config.js missing"
+    [ -d "$TEST_DIR/backend/__tests__" ] && pass "[$label] nodejs: __tests__/" || fail "[$label] nodejs: __tests__/ missing"
   fi
-  if [ "$er" = "yes" ]; then
-    grep -q "redis:7-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] redis" || fail "[$label] redis missing"
-  else
-    ! grep -q "redis:7-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] no redis" || fail "[$label] redis should be absent"
-  fi
-  if [ "$en" = "yes" ]; then
-    grep -q "nginx:stable-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] nginx" || fail "[$label] nginx missing"
-  else
-    ! grep -q "nginx:stable-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] no nginx" || fail "[$label] nginx should be absent"
-  fi
-  if command -v docker >/dev/null 2>&1; then
-    (cd "$TEST_DIR" && docker compose config >/dev/null 2>&1) && pass "[$label] compose config" || fail "[$label] compose config invalid"
-  fi
-  if [ "$eb" = "go" ] && command -v go >/dev/null 2>&1; then
-    (cd "$TEST_DIR/backend" && go vet ./... >/dev/null 2>&1) && pass "[$label] go vet" || fail "[$label] go vet failed"
+  if [ "$eb" = "rust" ]; then
+    [ -f "$TEST_DIR/backend/Cargo.toml" ] && pass "[$label] rust: Cargo.toml" || fail "[$label] rust: Cargo.toml missing"
+    [ -f "$TEST_DIR/backend/src/main.rs" ] && pass "[$label] rust: src/main.rs" || fail "[$label] rust: src/main.rs missing"
+    grep -q "#\[cfg(test)\]" "$TEST_DIR/backend/src/main.rs" 2>/dev/null && pass "[$label] rust: test module" || fail "[$label] rust: test module missing"
   fi
 
-  # Code quality checks
+  # =========================================================================
+  # BACKEND NEGATIVE TESTS - GO
+  # =========================================================================
+  if [ "$eb" = "go" ]; then
+    ! [ -f "$TEST_DIR/backend/cache.js" ] && pass "[$label] neg-go: no cache.js" || fail "[$label] neg-go: cache.js should not exist"
+    ! [ -f "$TEST_DIR/backend/logger.js" ] && pass "[$label] neg-go: no logger.js" || fail "[$label] neg-go: logger.js should not exist"
+    ! [ -f "$TEST_DIR/backend/validation.js" ] && pass "[$label] neg-go: no validation.js" || fail "[$label] neg-go: validation.js should not exist"
+    ! [ -f "$TEST_DIR/backend/health.js" ] && pass "[$label] neg-go: no health.js" || fail "[$label] neg-go: health.js should not exist"
+    ! [ -f "$TEST_DIR/backend/pool.js" ] && pass "[$label] neg-go: no pool.js" || fail "[$label] neg-go: pool.js should not exist"
+    ! [ -f "$TEST_DIR/backend/feature-flags.js" ] && pass "[$label] neg-go: no feature-flags.js" || fail "[$label] neg-go: feature-flags.js should not exist"
+    ! [ -f "$TEST_DIR/backend/cors.js" ] && pass "[$label] neg-go: no cors.js" || fail "[$label] neg-go: cors.js should not exist"
+    ! [ -f "$TEST_DIR/backend/package.json" ] && pass "[$label] neg-go: no package.json" || fail "[$label] neg-go: package.json should not exist"
+    ! [ -f "$TEST_DIR/backend/__tests__/health.test.js" ] && pass "[$label] neg-go: no health.test.js" || fail "[$label] neg-go: health.test.js should not exist"
+    ! [ -f "$TEST_DIR/backend/jest.config.js" ] && pass "[$label] neg-go: no jest.config.js" || fail "[$label] neg-go: jest.config.js should not exist"
+  fi
+
+  # =========================================================================
+  # BACKEND NEGATIVE TESTS - NODE.JS
+  # =========================================================================
+  if [ "$eb" = "nodejs" ]; then
+    ! [ -f "$TEST_DIR/backend/main.go" ] && pass "[$label] neg-nodejs: no main.go" || fail "[$label] neg-nodejs: main.go should not exist"
+    ! [ -f "$TEST_DIR/backend/go.mod" ] && pass "[$label] neg-nodejs: no go.mod" || fail "[$label] neg-nodejs: go.mod should not exist"
+    ! [ -f "$TEST_DIR/backend/main_test.go" ] && pass "[$label] neg-nodejs: no main_test.go" || fail "[$label] neg-nodejs: main_test.go should not exist"
+    ! [ -f "$TEST_DIR/backend/.golangci.yml" ] && pass "[$label] neg-nodejs: no .golangci.yml" || fail "[$label] neg-nodejs: .golangci.yml should not exist"
+    ! [ -f "$TEST_DIR/backend/src/main.rs" ] && pass "[$label] neg-nodejs: no src/main.rs" || fail "[$label] neg-nodejs: src/main.rs should not exist"
+    ! [ -f "$TEST_DIR/backend/Cargo.toml" ] && pass "[$label] neg-nodejs: no Cargo.toml" || fail "[$label] neg-nodejs: Cargo.toml should not exist"
+  fi
+
+  # =========================================================================
+  # BACKEND NEGATIVE TESTS - RUST
+  # =========================================================================
+  if [ "$eb" = "rust" ]; then
+    ! [ -f "$TEST_DIR/backend/main.go" ] && pass "[$label] neg-rust: no main.go" || fail "[$label] neg-rust: main.go should not exist"
+    ! [ -f "$TEST_DIR/backend/go.mod" ] && pass "[$label] neg-rust: no go.mod" || fail "[$label] neg-rust: go.mod should not exist"
+    ! [ -f "$TEST_DIR/backend/package.json" ] && pass "[$label] neg-rust: no package.json" || fail "[$label] neg-rust: package.json should not exist"
+    ! [ -f "$TEST_DIR/backend/cache.js" ] && pass "[$label] neg-rust: no cache.js" || fail "[$label] neg-rust: cache.js should not exist"
+  fi
+
+  # =========================================================================
+  # NODE.JS POSITIVE TESTS (JS files should exist)
+  # =========================================================================
+  if [ "$eb" = "nodejs" ]; then
+    [ -f "$TEST_DIR/backend/cache.js" ] && pass "[$label] nodejs-pos: cache.js" || fail "[$label] nodejs-pos: cache.js missing"
+    [ -f "$TEST_DIR/backend/logger.js" ] && pass "[$label] nodejs-pos: logger.js" || fail "[$label] nodejs-pos: logger.js missing"
+    [ -f "$TEST_DIR/backend/validation.js" ] && pass "[$label] nodejs-pos: validation.js" || fail "[$label] nodejs-pos: validation.js missing"
+    [ -f "$TEST_DIR/backend/health.js" ] && pass "[$label] nodejs-pos: health.js" || fail "[$label] nodejs-pos: health.js missing"
+    [ -f "$TEST_DIR/backend/pool.js" ] && pass "[$label] nodejs-pos: pool.js" || fail "[$label] nodejs-pos: pool.js missing"
+    [ -f "$TEST_DIR/backend/feature-flags.js" ] && pass "[$label] nodejs-pos: feature-flags.js" || fail "[$label] nodejs-pos: feature-flags.js missing"
+    [ -f "$TEST_DIR/backend/cors.js" ] && pass "[$label] nodejs-pos: cors.js" || fail "[$label] nodejs-pos: cors.js missing"
+  fi
+
+  # =========================================================================
+  # DATABASE TESTS
+  # =========================================================================
+  if [ -n "$ed" ] && [ "$ed" != "none" ]; then
+    grep -q "$ed" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] DB: $ed present" || fail "[$label] DB: $ed missing"
+  fi
+  if [ "$ed" = "none" ]; then
+    ! grep -q "postgres:16" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] neg-db: no postgres" || fail "[$label] neg-db: postgres should be absent"
+    ! grep -q "mysql:8" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] neg-db: no mysql" || fail "[$label] neg-db: mysql should be absent"
+    ! grep -q "mongo:7" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] neg-db: no mongo" || fail "[$label] neg-db: mongo should be absent"
+  fi
+
+  # =========================================================================
+  # REDIS TESTS
+  # =========================================================================
+  if [ "$er" = "yes" ]; then
+    grep -q "redis:7-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] redis: present" || fail "[$label] redis: missing"
+  else
+    ! grep -q "redis:7-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] neg-redis: no redis" || fail "[$label] neg-redis: redis should be absent"
+  fi
+
+  # =========================================================================
+  # NGINX TESTS
+  # =========================================================================
+  if [ "$en" = "yes" ]; then
+    grep -q "nginx:stable-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] nginx: present" || fail "[$label] nginx: missing"
+    [ -d "$TEST_DIR/nginx" ] && pass "[$label] nginx: directory" || fail "[$label] nginx: directory missing"
+  else
+    ! grep -q "nginx:stable-alpine" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] neg-nginx: no nginx service" || fail "[$label] neg-nginx: nginx should be absent"
+    ! [ -d "$TEST_DIR/nginx" ] && pass "[$label] neg-nginx: no nginx dir" || fail "[$label] neg-nginx: nginx dir should be absent"
+  fi
+
+  # =========================================================================
+  # DOCKER COMPOSE VALIDATION
+  # =========================================================================
+  if command -v docker >/dev/null 2>&1; then
+    (cd "$TEST_DIR" && docker compose config >/dev/null 2>&1) && pass "[$label] compose: config valid" || fail "[$label] compose: config invalid"
+  fi
+
+  # =========================================================================
+  # GO VET
+  # =========================================================================
+  if [ "$eb" = "go" ] && command -v go >/dev/null 2>&1; then
+    (cd "$TEST_DIR/backend" && go vet ./... >/dev/null 2>&1) && pass "[$label] go: vet passed" || fail "[$label] go: vet failed"
+  fi
+
+  # =========================================================================
+  # CODE QUALITY
+  # =========================================================================
   if [ "$eb" = "go" ] && [ -f "$TEST_DIR/backend/.golangci.yml" ]; then
     pass "[$label] linting: .golangci.yml"
   elif [ "$eb" = "nodejs" ] && [ -f "$TEST_DIR/backend/.eslintrc.js" ]; then
@@ -52,8 +155,6 @@ check_project() {
   elif [ "$eb" = "rust" ] && [ -f "$TEST_DIR/backend/clippy.toml" ]; then
     pass "[$label] linting: clippy.toml"
   fi
-
-  # Frontend linting
   if [ -f "$TEST_DIR/frontend/.eslintrc.js" ] || [ -f "$TEST_DIR/frontend/.eslintrc.json" ]; then
     pass "[$label] linting: frontend eslint"
   fi
@@ -61,105 +162,54 @@ check_project() {
     pass "[$label] linting: frontend prettier"
   fi
 
-  # Git hooks
-  if [ -f "$TEST_DIR/.husky/pre-commit" ]; then
-    pass "[$label] hooks: pre-commit"
-  fi
-  if [ -f "$TEST_DIR/.husky/commit-msg" ]; then
-    pass "[$label] hooks: commit-msg"
-  fi
-  if [ -f "$TEST_DIR/.husky/pre-push" ]; then
-    pass "[$label] hooks: pre-push"
-  fi
+  # =========================================================================
+  # GIT HOOKS
+  # =========================================================================
+  [ -f "$TEST_DIR/.husky/pre-commit" ] && pass "[$label] hooks: pre-commit" || fail "[$label] hooks: pre-commit missing"
+  [ -f "$TEST_DIR/.husky/commit-msg" ] && pass "[$label] hooks: commit-msg" || fail "[$label] hooks: commit-msg missing"
+  [ -f "$TEST_DIR/.husky/pre-push" ] && pass "[$label] hooks: pre-push" || fail "[$label] hooks: pre-push missing"
 
+  # =========================================================================
   # CI/CD
-  if [ -f "$TEST_DIR/.github/workflows/ci.yml" ]; then
-    pass "[$label] cicd: ci.yml"
-  fi
-  if [ -f "$TEST_DIR/.github/workflows/deploy.yml" ]; then
-    pass "[$label] cicd: deploy.yml"
+  # =========================================================================
+  [ -f "$TEST_DIR/.github/workflows/ci.yml" ] && pass "[$label] cicd: ci.yml" || fail "[$label] cicd: ci.yml missing"
+  [ -f "$TEST_DIR/.github/workflows/deploy.yml" ] && pass "[$label] cicd: deploy.yml" || fail "[$label] cicd: deploy.yml missing"
+
+  # =========================================================================
+  # SECURITY
+  # =========================================================================
+  if [ "$en" = "yes" ]; then
+    [ -f "$TEST_DIR/nginx/security-headers.conf" ] && pass "[$label] security: headers" || fail "[$label] security: headers missing"
+    [ -f "$TEST_DIR/nginx/rate-limit.conf" ] && pass "[$label] security: rate-limit" || fail "[$label] security: rate-limit missing"
   fi
 
-  # Security
-  if [ -f "$TEST_DIR/nginx/security-headers.conf" ]; then
-    pass "[$label] security: headers"
-  fi
-  if [ -f "$TEST_DIR/nginx/rate-limit.conf" ]; then
-    pass "[$label] security: rate-limit"
-  fi
-  if [ -f "$TEST_DIR/backend/cors.js" ]; then
-    pass "[$label] security: cors"
-  fi
-  if [ -f "$TEST_DIR/backend/validation.js" ]; then
-    pass "[$label] security: validation"
-  fi
+  # =========================================================================
+  # OBSERVABILITY
+  # =========================================================================
+  [ -f "$TEST_DIR/monitoring/prometheus.yml" ] && pass "[$label] observability: prometheus" || fail "[$label] observability: prometheus missing"
+  [ -f "$TEST_DIR/monitoring/alert_rules.yml" ] && pass "[$label] observability: alerts" || fail "[$label] observability: alerts missing"
 
-  # Observability
-  if [ -f "$TEST_DIR/monitoring/prometheus.yml" ]; then
-    pass "[$label] observability: prometheus"
-  fi
-  if [ -f "$TEST_DIR/monitoring/alert_rules.yml" ]; then
-    pass "[$label] observability: alerts"
-  fi
-  if [ -f "$TEST_DIR/backend/logger.js" ]; then
-    pass "[$label] observability: logger"
-  fi
-  if [ -f "$TEST_DIR/backend/health.js" ]; then
-    pass "[$label] observability: health"
-  fi
+  # =========================================================================
+  # MULTI-ENVIRONMENT
+  # =========================================================================
+  [ -f "$TEST_DIR/.env.development" ] && pass "[$label] env: development" || fail "[$label] env: development missing"
+  [ -f "$TEST_DIR/.env.staging" ] && pass "[$label] env: staging" || fail "[$label] env: staging missing"
+  [ -f "$TEST_DIR/.env.production" ] && pass "[$label] env: production" || fail "[$label] env: production missing"
 
-  # Multi-environment
-  if [ -f "$TEST_DIR/.env.development" ]; then
-    pass "[$label] environments: development"
-  fi
-  if [ -f "$TEST_DIR/.env.staging" ]; then
-    pass "[$label] environments: staging"
-  fi
-  if [ -f "$TEST_DIR/.env.production" ]; then
-    pass "[$label] environments: production"
-  fi
-  if [ -f "$TEST_DIR/backend/feature-flags.js" ]; then
-    pass "[$label] environments: feature-flags"
-  fi
+  # =========================================================================
+  # ROOT TOOLING
+  # =========================================================================
+  [ -f "$TEST_DIR/Makefile" ] && pass "[$label] root: Makefile" || fail "[$label] root: Makefile missing"
+  [ -f "$TEST_DIR/scripts/memory-read.sh" ] && pass "[$label] memory: read" || fail "[$label] memory: read missing"
+  [ -f "$TEST_DIR/scripts/memory-update.sh" ] && pass "[$label] memory: update" || fail "[$label] memory: update missing"
+  [ -d "$TEST_DIR/.git" ] && pass "[$label] git: initialized" || fail "[$label] git: not initialized"
+  [ -f "$TEST_DIR/.github/ISSUE_TEMPLATE/bug_report.md" ] && pass "[$label] github: bug template" || fail "[$label] github: bug template missing"
+  [ -f "$TEST_DIR/.github/ISSUE_TEMPLATE/feature_request.md" ] && pass "[$label] github: feature template" || fail "[$label] github: feature template missing"
+  [ -f "$TEST_DIR/.github/PULL_REQUEST_TEMPLATE.md" ] && pass "[$label] github: PR template" || fail "[$label] github: PR template missing"
 
-  # Root tooling
-  if [ -f "$TEST_DIR/Makefile" ]; then
-    pass "[$label] root: Makefile"
-  fi
-  if [ -f "$TEST_DIR/scripts/memory-read.sh" ]; then
-    pass "[$label] memory: read script"
-  fi
-  if [ -f "$TEST_DIR/scripts/memory-update.sh" ]; then
-    pass "[$label] memory: update script"
-  fi
-  if [ -d "$TEST_DIR/.git" ]; then
-    pass "[$label] git: initialized"
-  fi
-  if [ -f "$TEST_DIR/.github/ISSUE_TEMPLATE/bug_report.md" ]; then
-    pass "[$label] github: bug template"
-  fi
-  if [ -f "$TEST_DIR/.github/ISSUE_TEMPLATE/feature_request.md" ]; then
-    pass "[$label] github: feature template"
-  fi
-  if [ -f "$TEST_DIR/.github/PULL_REQUEST_TEMPLATE.md" ]; then
-    pass "[$label] github: PR template"
-  fi
-
-  # Unit test skeletons
-  if [ "$eb" = "go" ] && [ -f "$TEST_DIR/backend/main_test.go" ]; then
-    pass "[$label] tests: go backend"
-  fi
-  if [ "$eb" = "nodejs" ] && [ -f "$TEST_DIR/backend/__tests__/health.test.js" ]; then
-    pass "[$label] tests: nodejs backend"
-  fi
-  if [ "$eb" = "nodejs" ] && [ -f "$TEST_DIR/backend/jest.config.js" ]; then
-    pass "[$label] tests: nodejs jest config"
-  fi
-  if [ "$eb" = "rust" ] && grep -q "#\[cfg(test)\]" "$TEST_DIR/backend/src/main.rs" 2>/dev/null; then
-    pass "[$label] tests: rust backend"
-  fi
-
-  # Frontend test skeletons
+  # =========================================================================
+  # TEST SKELETONS
+  # =========================================================================
   if [ -f "$TEST_DIR/frontend/__tests__/index.test.js" ] || [ -f "$TEST_DIR/frontend/src/__tests__/App.test.jsx" ] || [ -f "$TEST_DIR/frontend/src/__tests__/App.test.js" ] || [ -f "$TEST_DIR/frontend/src/app/app.component.spec.ts" ]; then
     pass "[$label] tests: frontend skeleton"
   fi
@@ -167,79 +217,62 @@ check_project() {
     pass "[$label] tests: frontend config"
   fi
 
-  # Database migrations
-  if [ -d "$TEST_DIR/backend/migrations" ]; then
-    pass "[$label] migrations: directory"
-  fi
-  if [ -d "$TEST_DIR/backend/seeds" ]; then
-    pass "[$label] migrations: seeds"
-  fi
-  if [ -f "$TEST_DIR/scripts/backup.sh" ]; then
-    pass "[$label] migrations: backup"
-  fi
-  if [ -f "$TEST_DIR/scripts/restore.sh" ]; then
-    pass "[$label] migrations: restore"
+  # =========================================================================
+  # DATABASE MIGRATIONS
+  # =========================================================================
+  [ -d "$TEST_DIR/backend/migrations" ] && pass "[$label] migrations: dir" || fail "[$label] migrations: dir missing"
+  [ -d "$TEST_DIR/backend/seeds" ] && pass "[$label] migrations: seeds" || fail "[$label] migrations: seeds missing"
+  [ -f "$TEST_DIR/scripts/backup.sh" ] && pass "[$label] migrations: backup" || fail "[$label] migrations: backup missing"
+  [ -f "$TEST_DIR/scripts/restore.sh" ] && pass "[$label] migrations: restore" || fail "[$label] migrations: restore missing"
+
+  # =========================================================================
+  # DEPLOYMENT
+  # =========================================================================
+  [ -d "$TEST_DIR/deploy/k8s" ] && pass "[$label] deploy: k8s" || fail "[$label] deploy: k8s missing"
+  [ -d "$TEST_DIR/deploy/aws" ] && pass "[$label] deploy: aws" || fail "[$label] deploy: aws missing"
+  [ -d "$TEST_DIR/deploy/gcp" ] && pass "[$label] deploy: gcp" || fail "[$label] deploy: gcp missing"
+  [ -d "$TEST_DIR/deploy/azure" ] && pass "[$label] deploy: azure" || fail "[$label] deploy: azure missing"
+
+  # =========================================================================
+  # CODE GENERATION
+  # =========================================================================
+  [ -f "$TEST_DIR/scripts/generate.sh" ] && pass "[$label] codegen: cli" || fail "[$label] codegen: cli missing"
+
+  # =========================================================================
+  # ADVANCED TESTING
+  # =========================================================================
+  [ -d "$TEST_DIR/tests/load" ] && pass "[$label] testing: load" || fail "[$label] testing: load missing"
+  [ -d "$TEST_DIR/tests/security" ] && pass "[$label] testing: security" || fail "[$label] testing: security missing"
+  [ -d "$TEST_DIR/tests/contract" ] && pass "[$label] testing: contract" || fail "[$label] testing: contract missing"
+
+  # =========================================================================
+  # PERFORMANCE
+  # =========================================================================
+  if [ "$en" = "yes" ]; then
+    [ -f "$TEST_DIR/nginx/compression.conf" ] && pass "[$label] perf: compression" || fail "[$label] perf: compression missing"
   fi
 
-  # Multi-deployment
-  if [ -d "$TEST_DIR/deploy/k8s" ]; then
-    pass "[$label] deployment: kubernetes"
-  fi
-  if [ -d "$TEST_DIR/deploy/aws" ]; then
-    pass "[$label] deployment: aws"
-  fi
-  if [ -d "$TEST_DIR/deploy/gcp" ]; then
-    pass "[$label] deployment: gcp"
-  fi
-  if [ -d "$TEST_DIR/deploy/azure" ]; then
-    pass "[$label] deployment: azure"
-  fi
+  # =========================================================================
+  # DEVELOPER EXPERIENCE
+  # =========================================================================
+  [ -d "$TEST_DIR/.vscode" ] && pass "[$label] dx: vscode" || fail "[$label] dx: vscode missing"
+  [ -d "$TEST_DIR/.devcontainer" ] && pass "[$label] dx: devcontainer" || fail "[$label] dx: devcontainer missing"
+  [ -f "$TEST_DIR/scripts/cli.sh" ] && pass "[$label] dx: cli" || fail "[$label] dx: cli missing"
 
-  # Code generation
-  if [ -f "$TEST_DIR/scripts/generate.sh" ]; then
-    pass "[$label] codegen: cli"
-  fi
+  # =========================================================================
+  # COMMIT STANDARDS
+  # =========================================================================
+  [ -f "$TEST_DIR/commitlint.config.js" ] && pass "[$label] commit: commitlint" || fail "[$label] commit: commitlint missing"
+  [ -f "$TEST_DIR/.editorconfig" ] && pass "[$label] commit: editorconfig" || fail "[$label] commit: editorconfig missing"
 
-  # Advanced testing
-  if [ -d "$TEST_DIR/tests/load" ]; then
-    pass "[$label] testing: load"
+  # =========================================================================
+  # CONTENT VALIDATION
+  # =========================================================================
+  if [ "$eb" = "go" ]; then
+    grep -q "healthHandler" "$TEST_DIR/backend/main.go" 2>/dev/null && pass "[$label] content: healthHandler" || fail "[$label] content: healthHandler missing"
+    grep -q "TestHealth" "$TEST_DIR/backend/main_test.go" 2>/dev/null && pass "[$label] content: TestHealth" || fail "[$label] content: TestHealth missing"
   fi
-  if [ -d "$TEST_DIR/tests/security" ]; then
-    pass "[$label] testing: security"
-  fi
-  if [ -d "$TEST_DIR/tests/contract" ]; then
-    pass "[$label] testing: contract"
-  fi
-
-  # Performance
-  if [ -f "$TEST_DIR/nginx/compression.conf" ]; then
-    pass "[$label] performance: compression"
-  fi
-  if [ -f "$TEST_DIR/backend/cache.js" ]; then
-    pass "[$label] performance: cache"
-  fi
-  if [ -f "$TEST_DIR/backend/pool.js" ]; then
-    pass "[$label] performance: connection-pool"
-  fi
-
-  # Developer Experience
-  if [ -d "$TEST_DIR/.vscode" ]; then
-    pass "[$label] dx: vscode"
-  fi
-  if [ -d "$TEST_DIR/.devcontainer" ]; then
-    pass "[$label] dx: devcontainer"
-  fi
-  if [ -f "$TEST_DIR/scripts/cli.sh" ]; then
-    pass "[$label] dx: cli"
-  fi
-
-  # Commit standards
-  if [ -f "$TEST_DIR/commitlint.config.js" ]; then
-    pass "[$label] commit: commitlint.config.js"
-  fi
-  if [ -f "$TEST_DIR/.editorconfig" ]; then
-    pass "[$label] commit: .editorconfig"
-  fi
+  grep -q "services:" "$TEST_DIR/docker-compose.yml" 2>/dev/null && pass "[$label] content: services" || fail "[$label] content: services missing"
 
   [ "$FAIL" -gt "$before" ] && CASE_FAIL=$((CASE_FAIL+1)) || true
 }
@@ -257,24 +290,33 @@ run_case() {
   cleanup
 }
 
-info "Testing all selection combinations (no docker build)..."
+info "Testing all selection combinations (super heavy tests)..."
 # inputs: Project, Backend, Frontend, CSS, DB, BackendTest, FrontendTest, Redis, Nginx, Confirm
-# Backend variants
-run_case "go"        'test-auto\n1\n1\n1\n1\n1\n1\n1\n1\nyes\n'        go postgres:16-alpine yes yes
-run_case "nodejs"    'test-auto\n1\n2\n1\n1\n1\n1\n1\n1\nyes\n'        go postgres:16-alpine yes yes
-run_case "rust"      'test-auto\n1\n3\n1\n1\n1\n1\n1\n1\nyes\n'        go postgres:16-alpine yes yes
 
-# DB variants
+# =========================================================================
+# BACKEND VARIANTS
+# =========================================================================
+run_case "go"        'test-auto\n1\n1\n1\n1\n1\n1\n1\n1\nyes\n'        go postgres:16-alpine yes yes
+run_case "nodejs"    'test-auto\n2\n1\n1\n1\n1\n1\n1\n1\nyes\n'        nodejs postgres:16-alpine yes yes
+run_case "rust"      'test-auto\n3\n1\n1\n1\n1\n1\n1\n1\nyes\n'        rust postgres:16-alpine yes yes
+
+# =========================================================================
+# DATABASE VARIANTS
+# =========================================================================
 run_case "db:mysql"  'test-auto\n1\n1\n1\n2\n1\n1\n1\n1\nyes\n'        go mysql:8.0 yes yes
 run_case "db:mongo"  'test-auto\n1\n1\n1\n3\n1\n1\n1\n1\nyes\n'        go mongo:7 yes yes
 run_case "db:sqlite" 'test-auto\n1\n1\n1\n4\n1\n1\n1\n1\nyes\n'        go none yes yes
 
-# Redis/Nginx toggles
+# =========================================================================
+# REDIS/NGINX TOGGLES
+# =========================================================================
 run_case "no-redis"  'test-auto\n1\n1\n1\n1\n1\n1\n2\n1\nyes\n'        go postgres:16-alpine no yes
 run_case "no-nginx"  'test-auto\n1\n1\n1\n1\n1\n1\n1\n2\nyes\n'        go postgres:16-alpine yes no
 run_case "minimal"   'test-auto\n1\n1\n1\n1\n1\n1\n2\n2\nyes\n'        go postgres:16-alpine no no
 
-# Frontend variants
+# =========================================================================
+# FRONTEND VARIANTS
+# =========================================================================
 run_case "frontend:react" 'test-auto\n1\n1\n2\n1\n1\n1\n1\n1\nyes\n'  go postgres:16-alpine yes yes
 run_case "frontend:vue"   'test-auto\n1\n1\n3\n1\n1\n1\n1\n1\nyes\n'  go postgres:16-alpine yes yes
 
