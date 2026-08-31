@@ -60,6 +60,21 @@ print_error() {
 }
 
 # ============================================================
+#  UPDATE .env.production
+# ============================================================
+update_env() {
+  local key="$1"
+  local value="$2"
+  if [ -f "$ENV_FILE" ]; then
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+      sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+    else
+      echo "${key}=${value}" >> "$ENV_FILE"
+    fi
+  fi
+}
+
+# ============================================================
 #  METHOD SELECTION (Interactive with default from .env)
 # ============================================================
 select_method() {
@@ -108,6 +123,9 @@ select_method() {
       exit 1
       ;;
   esac
+
+  # Save to .env.production
+  update_env "DEPLOY_METHOD" "$METHOD"
 }
 
 # ============================================================
@@ -408,6 +426,8 @@ case "$METHOD" in
         SCP_HOST="${SCP_HOST:-$DEPLOY_HOST}"
         read -p "  Path [$DEPLOY_PATH]: " SCP_PATH
         SCP_PATH="${SCP_PATH:-$DEPLOY_PATH}"
+        update_env "DEPLOY_HOST" "$SCP_HOST"
+        update_env "DEPLOY_PATH" "$SCP_PATH"
         deploy_scp
         ;;
       rsync)
@@ -415,11 +435,14 @@ case "$METHOD" in
         RSYNC_HOST="${RSYNC_HOST:-$DEPLOY_HOST}"
         read -p "  Path [$DEPLOY_PATH]: " RSYNC_PATH
         RSYNC_PATH="${RSYNC_PATH:-$DEPLOY_PATH}"
+        update_env "DEPLOY_HOST" "$RSYNC_HOST"
+        update_env "DEPLOY_PATH" "$RSYNC_PATH"
         deploy_rsync
         ;;
       docker)
         read -p "  Registry [$DOCKER_REGISTRY]: " DOCKER_REGISTRY
         DOCKER_REGISTRY="${DOCKER_REGISTRY:-$DOCKER_REGISTRY}"
+        update_env "DOCKER_REGISTRY" "$DOCKER_REGISTRY"
         deploy_docker
         ;;
       ci) deploy_ci ;;
