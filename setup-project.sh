@@ -16,7 +16,7 @@ if [ -f "$SCRIPT_DIR/lib/utils.sh" ]; then
 fi
 
 # Load modules
-for module in config docker backend frontend docs linting hooks cicd security monitoring environments migrations deployment codegen testing performance dx; do
+for module in config docker backend frontend docs linting hooks cicd security monitoring environments migrations deployment codegen testing performance dx scripts; do
   if [ -f "$SCRIPT_DIR/lib/$module.sh" ]; then
     # shellcheck disable=SC1091
     source "$SCRIPT_DIR/lib/$module.sh"
@@ -63,7 +63,12 @@ log "Directory structure"
 # ============================================================
 generate_root_files
 generate_nginx
+generate_nginx_prod
 generate_docker_compose
+generate_docker_compose_prod
+generate_deploy_script
+generate_backup_script
+generate_restore_script
 
 # README.md
 if [ "$FRONTEND" = "templ" ]; then

@@ -85,25 +85,6 @@ REDIS_URL=redis://prod-redis.example.com:6379
 EOF
   log ".env.production"
 
-  # Docker Compose overrides
-  cat > "$PROJECT_PATH/docker-compose.dev.yml" << 'EOF'
-# Development overrides
-services:
-  backend:
-    volumes:
-      - ./backend:/app
-    command: go run main.go
-    environment:
-      - APP_DEBUG=true
-      - LOG_LEVEL=debug
-
-  frontend:
-    volumes:
-      - ./frontend:/app
-    command: npm run dev
-EOF
-  log "docker-compose.dev.yml"
-
   # Feature flags (Node.js only)
   if [ "$BACKEND" = "nodejs" ]; then
     cat > "$PROJECT_PATH/backend/feature-flags.js" << 'EOF'

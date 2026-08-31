@@ -452,3 +452,284 @@ EOF
 
   log "docker-compose.yml"
 }
+
+generate_docker_compose_prod() {
+  info "Docker Compose (Production)"
+
+  # Build depends_on section (no healthcheck condition needed for prod)
+  DEPENDS_ON=""
+  if [ "$DB" != "sqlite" ]; then
+    DEPENDS_ON="${DEPENDS_ON}      db:\n        condition: service_healthy\n"
+  fi
+  if [ "$USE_REDIS" = "yes" ]; then
+    DEPENDS_ON="${DEPENDS_ON}      redis:\n        condition: service_healthy\n"
+  fi
+
+  cat > "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - DB_NAME=${DB_NAME}
+EOF
+
+  if [ "$USE_REDIS" = "yes" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+      - REDIS_URL=${REDIS_URL}
+EOF
+  fi
+
+  cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+    depends_on:
+EOF
+
+  echo -e "$DEPENDS_ON" >> "$PROJECT_PATH/docker-compose.prod.yml"
+
+  # Frontend service (only if not templ/SSR)
+  if [ "$FRONTEND" != "templ" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      - backend
+EOF
+  fi
+
+  # Database service
+  if [ "$DB" != "sqlite" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+
+  db:
+    image: DB_IMAGE_PLACEHOLDER
+    restart: always
+EOF
+
+    case $DB in
+      postgres)
+        cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+EOF
+        ;;
+      mysql)
+        cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+EOF
+        ;;
+      mongodb)
+        cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+    volumes:
+      - db_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+EOF
+        ;;
+    esac
+  fi
+
+  # Redis service
+  if [ "$USE_REDIS" = "yes" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+
+  redis:
+    image: redis:7.2
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+EOF
+  fi
+
+  # Nginx service (always in prod)
+  if [ "$USE_NGINX" = "yes" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+EOF
+    if [ "$FRONTEND" != "templ" ]; then
+      cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+      - frontend
+EOF
+    fi
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+      - backend
+EOF
+  fi
+
+  # Volumes
+  if [ "$DB" != "sqlite" ]; then
+    cat >> "$PROJECT_PATH/docker-compose.prod.yml" << 'EOF'
+
+volumes:
+  db_data:
+EOF
+  fi
+
+  # Replace DB_IMAGE placeholder
+  sed -i "s|DB_IMAGE_PLACEHOLDER|$DB_IMAGE|g" "$PROJECT_PATH/docker-compose.prod.yml" 2>/dev/null || \
+    sed -i '' "s|DB_IMAGE_PLACEHOLDER|$DB_IMAGE|g" "$PROJECT_PATH/docker-compose.prod.yml" 2>/dev/null || true
+
+  log "docker-compose.prod.yml"
+}
+
+generate_nginx_prod() {
+  if [ "$USE_NGINX" != "yes" ]; then
+    return
+  fi
+
+  info "Nginx (Production)"
+
+  cat > "$PROJECT_PATH/nginx/nginx.prod.conf" << 'NGINXEOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    sendfile    on;
+    keepalive_timeout  65;
+
+    # Gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+    # Rate limiting
+    limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+
+    # Upstreams
+    upstream backend {
+        server backend:8080;
+    }
+NGINXEOF
+
+  if [ "$FRONTEND" != "templ" ]; then
+    cat >> "$PROJECT_PATH/nginx/nginx.prod.conf" << 'NGINXEOF'
+
+    upstream frontend {
+        server frontend:3000;
+    }
+NGINXEOF
+  fi
+
+  cat >> "$PROJECT_PATH/nginx/nginx.prod.conf" << 'NGINXEOF'
+
+    # HTTP -> HTTPS redirect
+    server {
+        listen 80;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
+
+    # HTTPS server
+    server {
+        listen 443 ssl http2;
+        server_name _;
+
+        # SSL configuration
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+
+        # Security headers
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        # API routes -> backend
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+NGINXEOF
+
+  if [ "$FRONTEND" != "templ" ]; then
+    cat >> "$PROJECT_PATH/nginx/nginx.prod.conf" << 'NGINXEOF'
+
+        # Frontend -> frontend service
+        location / {
+            proxy_pass http://frontend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+NGINXEOF
+  fi
+
+  cat >> "$PROJECT_PATH/nginx/nginx.prod.conf" << 'NGINXEOF'
+
+        # Health check
+        location /nginx-health {
+            return 200 'ok';
+            add_header Content-Type text/plain;
+        }
+    }
+}
+NGINXEOF
+
+  log "nginx/nginx.prod.conf"
+}

@@ -232,6 +232,37 @@ check_project() {
   [ -d "$TEST_DIR/deploy/aws" ] && pass "[$label] deploy: aws" || fail "[$label] deploy: aws missing"
   [ -d "$TEST_DIR/deploy/gcp" ] && pass "[$label] deploy: gcp" || fail "[$label] deploy: gcp missing"
   [ -d "$TEST_DIR/deploy/azure" ] && pass "[$label] deploy: azure" || fail "[$label] deploy: azure missing"
+  [ -f "$TEST_DIR/scripts/deploy.sh" ] && pass "[$label] deploy: script" || fail "[$label] deploy: script missing"
+
+  # =========================================================================
+  # PRODUCTION DOCKER COMPOSE
+  # =========================================================================
+  [ -f "$TEST_DIR/docker-compose.prod.yml" ] && pass "[$label] prod: compose" || fail "[$label] prod: compose missing"
+  if [ -f "$TEST_DIR/docker-compose.prod.yml" ]; then
+    grep -q "restart: always" "$TEST_DIR/docker-compose.prod.yml" 2>/dev/null && pass "[$label] prod: restart policy" || fail "[$label] prod: restart policy missing"
+    grep -q "APP_ENV=production" "$TEST_DIR/docker-compose.prod.yml" 2>/dev/null && pass "[$label] prod: APP_ENV" || fail "[$label] prod: APP_ENV missing"
+    grep -q "\${DATABASE_URL}" "$TEST_DIR/docker-compose.prod.yml" 2>/dev/null && pass "[$label] prod: secrets env var" || fail "[$label] prod: secrets env var missing"
+  fi
+
+  # =========================================================================
+  # PRODUCTION NGINX
+  # =========================================================================
+  if [ "$en" = "yes" ]; then
+    [ -f "$TEST_DIR/nginx/nginx.prod.conf" ] && pass "[$label] prod: nginx" || fail "[$label] prod: nginx missing"
+    if [ -f "$TEST_DIR/nginx/nginx.prod.conf" ]; then
+      grep -q "ssl" "$TEST_DIR/nginx/nginx.prod.conf" 2>/dev/null && pass "[$label] prod: ssl" || fail "[$label] prod: ssl missing"
+      grep -q "Strict-Transport-Security" "$TEST_DIR/nginx/nginx.prod.conf" 2>/dev/null && pass "[$label] prod: hsts" || fail "[$label] prod: hsts missing"
+      grep -q "X-Frame-Options" "$TEST_DIR/nginx/nginx.prod.conf" 2>/dev/null && pass "[$label] prod: x-frame" || fail "[$label] prod: x-frame missing"
+      grep -q "limit_req_zone" "$TEST_DIR/nginx/nginx.prod.conf" 2>/dev/null && pass "[$label] prod: rate-limit" || fail "[$label] prod: rate-limit missing"
+      grep -q "gzip" "$TEST_DIR/nginx/nginx.prod.conf" 2>/dev/null && pass "[$label] prod: gzip" || fail "[$label] prod: gzip missing"
+    fi
+  fi
+
+  # =========================================================================
+  # BACKUP & RESTORE SCRIPTS
+  # =========================================================================
+  [ -f "$TEST_DIR/scripts/backup.sh" ] && pass "[$label] scripts: backup" || fail "[$label] scripts: backup missing"
+  [ -f "$TEST_DIR/scripts/restore.sh" ] && pass "[$label] scripts: restore" || fail "[$label] scripts: restore missing"
 
   # =========================================================================
   # CODE GENERATION
