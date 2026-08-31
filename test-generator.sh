@@ -235,6 +235,19 @@ check_project() {
   [ -f "$TEST_DIR/scripts/deploy.sh" ] && pass "[$label] deploy: script" || fail "[$label] deploy: script missing"
 
   # =========================================================================
+  # DEPLOY METHODS
+  # =========================================================================
+  if [ -f "$TEST_DIR/scripts/deploy.sh" ]; then
+    grep -q "deploy_git" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method git" || fail "[$label] deploy: method git missing"
+    grep -q "deploy_scp" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method scp" || fail "[$label] deploy: method scp missing"
+    grep -q "deploy_rsync" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method rsync" || fail "[$label] deploy: method rsync missing"
+    grep -q "deploy_docker" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method docker" || fail "[$label] deploy: method docker missing"
+    grep -q "deploy_ci" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method ci" || fail "[$label] deploy: method ci missing"
+    grep -q "deploy_local" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: method local" || fail "[$label] deploy: method local missing"
+    grep -q "select_method" "$TEST_DIR/scripts/deploy.sh" 2>/dev/null && pass "[$label] deploy: interactive menu" || fail "[$label] deploy: interactive menu missing"
+  fi
+
+  # =========================================================================
   # PRODUCTION DOCKER COMPOSE
   # =========================================================================
   [ -f "$TEST_DIR/docker-compose.prod.yml" ] && pass "[$label] prod: compose" || fail "[$label] prod: compose missing"

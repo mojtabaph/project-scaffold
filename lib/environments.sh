@@ -82,6 +82,12 @@ NEXT_PUBLIC_API_URL=https://api.example.com
 
 # Redis
 REDIS_URL=redis://prod-redis.example.com:6379
+
+# Deploy
+# Options: git, scp, rsync, docker, ci, local
+DEPLOY_METHOD=local
+DEPLOY_HOST=user@server.example.com
+DEPLOY_PATH=/app
 EOF
   log ".env.production"
 

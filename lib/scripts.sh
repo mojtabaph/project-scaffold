@@ -9,61 +9,436 @@ generate_deploy_script() {
 set -euo pipefail
 
 # ============================================================
-#  DEPLOY SCRIPT
-#  Usage: ENV_FILE=.env.production bash scripts/deploy.sh
+#  DEPLOY SCRIPT - Multi-Method
+#  Usage: bash scripts/deploy.sh [method] [options]
+#
+#  Methods:
+#    git                           - Git Pull from remote
+#    scp <user>@<host> <path>      - SCP copy to server
+#    rsync <user>@<host> <path>    - Rsync smart copy
+#    docker <registry> <image>     - Docker push/pull
+#    ci                            - Generate CI/CD config
+#    local                         - Local deploy only (no transfer)
+#
+#  Examples:
+#    bash scripts/deploy.sh local
+#    bash scripts/deploy.sh git
+#    bash scripts/deploy.sh scp deploy@192.168.1.100 /app
+#    bash scripts/deploy.sh rsync deploy@192.168.1.100 /app
+#    bash scripts/deploy.sh docker registry.example.com/myapp myapp
+#    bash scripts/deploy.sh ci
 # ============================================================
 
 ENV_FILE="${ENV_FILE:-.env.production}"
 COMPOSE_FILE="docker-compose.prod.yml"
 
-echo "========================================="
-echo "  Deploying with $ENV_FILE"
-echo "========================================="
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-# 1. Validate env file
-if [ ! -f "$ENV_FILE" ]; then
-  echo "Error: $ENV_FILE not found!"
-  echo "Copy .env.production.example to .env.production and fill in values."
-  exit 1
-fi
-echo "[1/5] Environment file validated"
+print_header() {
+  echo ""
+  echo -e "${CYAN}=========================================${NC}"
+  echo -e "${CYAN}  DEPLOY - $1${NC}"
+  echo -e "${CYAN}=========================================${NC}"
+  echo ""
+}
 
-# 2. Build images
-echo "[2/5] Building Docker images..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+print_step() {
+  echo -e "${YELLOW}[$1/$2]${NC} $3"
+}
 
-# 3. Pull base images
-echo "[3/5] Pulling base images..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull
+print_success() {
+  echo -e "${GREEN}  [OK]${NC} $1"
+}
 
-# 4. Run migrations (if migrate script exists)
-if [ -f "scripts/migrate.sh" ]; then
-  echo "[4/5] Running migrations..."
-  ENV_FILE="$ENV_FILE" bash scripts/migrate.sh
-else
-  echo "[4/5] No migration script found - skipping"
-fi
+print_error() {
+  echo -e "${RED}  [ERROR]${NC} $1"
+}
 
-# 5. Start services
-echo "[5/5] Starting services..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+# ============================================================
+#  METHOD SELECTION (Interactive with default from .env)
+# ============================================================
+select_method() {
+  # Read default from .env.production
+  DEFAULT_METHOD="local"
+  if [ -f "$ENV_FILE" ]; then
+    ENV_METHOD=$(grep -E "^DEPLOY_METHOD=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)
+    if [ -n "$ENV_METHOD" ]; then
+      DEFAULT_METHOD="$ENV_METHOD"
+    fi
+  fi
 
-# Health check
-echo ""
-echo "Waiting for services to be healthy..."
-sleep 10
+  # Map default to number
+  case "$DEFAULT_METHOD" in
+    git)   DEFAULT_NUM="1" ;;
+    scp)   DEFAULT_NUM="2" ;;
+    rsync) DEFAULT_NUM="3" ;;
+    docker) DEFAULT_NUM="4" ;;
+    ci)    DEFAULT_NUM="5" ;;
+    local) DEFAULT_NUM="6" ;;
+    *)     DEFAULT_NUM="6" ;;
+  esac
 
-if docker compose -f "$COMPOSE_FILE" ps | grep -q "unhealthy\|starting"; then
-  echo "Warning: Some services may not be healthy yet."
-  docker compose -f "$COMPOSE_FILE" ps
-else
-  echo "All services are running!"
-fi
+  print_header "Select Deployment Method"
+  echo "  1) Git Pull        - Pull from GitHub/GitLab"
+  echo "  2) SCP             - Copy to server via SSH"
+  echo "  3) Rsync           - Smart copy (only changes)"
+  echo "  4) Docker Push/Pull - Via container registry"
+  echo "  5) CI/CD           - Generate GitHub Actions"
+  echo "  6) Local           - Deploy on this server only"
+  echo ""
+  read -p "  Select method [$DEFAULT_METHOD]: " choice
 
-echo ""
-echo "========================================="
-echo "  Deploy complete!"
-echo "========================================="
+  # If empty, use default
+  choice="${choice:-$DEFAULT_NUM}"
+
+  case $choice in
+    1) METHOD="git" ;;
+    2) METHOD="scp" ;;
+    3) METHOD="rsync" ;;
+    4) METHOD="docker" ;;
+    5) METHOD="ci" ;;
+    6) METHOD="local" ;;
+    *)
+      echo -e "${RED}Invalid choice${NC}"
+      exit 1
+      ;;
+  esac
+}
+
+# ============================================================
+#  METHOD 1: Git Pull
+# ============================================================
+deploy_git() {
+  print_header "Deploy via Git Pull"
+
+  # Check if git repo
+  if [ ! -d ".git" ]; then
+    print_error "Not a git repository"
+    exit 1
+  fi
+
+  print_step 1 4 "Pulling latest code..."
+  git pull origin main
+
+  print_step 2 4 "Installing dependencies..."
+  if [ -f "backend/go.mod" ]; then
+    (cd backend && go mod download) || true
+  elif [ -f "backend/package.json" ]; then
+    (cd backend && npm ci --production) || true
+  fi
+
+  print_step 3 4 "Building Docker images..."
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+
+  print_step 4 4 "Starting services..."
+  deploy_local_services
+}
+
+# ============================================================
+#  METHOD 2: SCP
+# ============================================================
+deploy_scp() {
+  print_header "Deploy via SCP"
+
+  if [ -z "$SCP_HOST" ] || [ -z "$SCP_PATH" ]; then
+    echo "  Usage: bash scripts/deploy.sh scp <user>@<host> <path>"
+    echo "  Example: bash scripts/deploy.sh scp deploy@192.168.1.100 /app"
+    exit 1
+  fi
+
+  print_step 1 3 "Copying files to $SCP_HOST..."
+  rsync -avz --delete \
+    --exclude 'node_modules' \
+    --exclude '.git' \
+    --exclude '*.log' \
+    --exclude 'backups' \
+    --exclude 'uploads' \
+    ./ "$SCP_HOST:$SCP_PATH/"
+
+  print_step 2 3 "Running remote deploy..."
+  ssh "$SCP_HOST" "cd $SCP_PATH && bash scripts/deploy.sh local"
+
+  print_step 3 3 "Deploy complete on remote server"
+}
+
+# ============================================================
+#  METHOD 3: Rsync
+# ============================================================
+deploy_rsync() {
+  print_header "Deploy via Rsync"
+
+  if [ -z "$RSYNC_HOST" ] || [ -z "$RSYNC_PATH" ]; then
+    echo "  Usage: bash scripts/deploy.sh rsync <user>@<host> <path>"
+    echo "  Example: bash scripts/deploy.sh rsync deploy@192.168.1.100 /app"
+    exit 1
+  fi
+
+  print_step 1 4 "Syncing files to $RSYNC_HOST..."
+  rsync -avz --delete \
+    --exclude 'node_modules' \
+    --exclude '.git' \
+    --exclude '*.log' \
+    --exclude 'backups' \
+    --exclude 'uploads' \
+    --exclude '.env' \
+    ./ "$RSYNC_HOST:$RSYNC_PATH/"
+
+  print_step 2 4 "Setting permissions..."
+  ssh "$RSYNC_HOST" "chmod +x $RSYNC_PATH/scripts/*.sh"
+
+  print_step 3 4 "Running remote deploy..."
+  ssh "$RSYNC_HOST" "cd $RSYNC_PATH && bash scripts/deploy.sh local"
+
+  print_step 4 4 "Deploy complete on remote server"
+}
+
+# ============================================================
+#  METHOD 4: Docker Push/Pull
+# ============================================================
+deploy_docker() {
+  print_header "Deploy via Docker Registry"
+
+  if [ -z "$DOCKER_REGISTRY" ]; then
+    echo "  Usage: bash scripts/deploy.sh docker <registry> [image]"
+    echo "  Example: bash scripts/deploy.sh docker registry.example.com/myapp myapp"
+    exit 1
+  fi
+
+  DOCKER_IMAGE="${DOCKER_IMAGE:-myapp}"
+  DOCKER_TAG="${DOCKER_TAG:-latest}"
+  FULL_IMAGE="$DOCKER_REGISTRY/$DOCKER_IMAGE:$DOCKER_TAG"
+
+  print_step 1 4 "Building Docker image..."
+  docker build -t "$FULL_IMAGE" .
+
+  print_step 2 4 "Pushing to registry..."
+  docker push "$FULL_IMAGE"
+
+  print_step 3 4 "Pulling on remote server..."
+  ssh "$DEPLOY_HOST" "docker pull $FULL_IMAGE" 2>/dev/null || true
+
+  print_step 4 4 "Deploy complete"
+  echo ""
+  echo "  Image: $FULL_IMAGE"
+  echo "  Run on server: docker compose up -d"
+}
+
+# ============================================================
+#  METHOD 5: CI/CD (Generate GitHub Actions)
+# ============================================================
+deploy_ci() {
+  print_header "Generate CI/CD Pipeline"
+
+  mkdir -p .github/workflows
+
+  cat > .github/workflows/deploy.yml << 'CIEOF'
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  APP_NAME: myapp
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Run tests
+        run: |
+          cd backend && go test ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy via Rsync
+        run: |
+          rsync -avz --delete \
+            --exclude 'node_modules' \
+            --exclude '.git' \
+            --exclude '*.log' \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/app/
+
+      - name: Run remote deploy
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} \
+            "cd /app && bash scripts/deploy.sh local"
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
+CIEOF
+
+  print_success ".github/workflows/deploy.yml created"
+  echo ""
+  echo "  Required GitHub Secrets:"
+  echo "    DEPLOY_HOST    - Server IP or hostname"
+  echo "    DEPLOY_USER    - SSH username"
+  echo "    SSH_PRIVATE_KEY - SSH private key"
+  echo ""
+  echo "  Push to main to trigger deploy!"
+}
+
+# ============================================================
+#  METHOD 6: Local Deploy (No Transfer)
+# ============================================================
+deploy_local() {
+  print_header "Local Deploy"
+
+  print_step 1 5 "Validating environment file..."
+  if [ ! -f "$ENV_FILE" ]; then
+    print_error "$ENV_FILE not found!"
+    echo "  Copy .env.production to .env.production and fill in values."
+    exit 1
+  fi
+  print_success "Environment file found"
+
+  print_step 2 5 "Building Docker images..."
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" build
+  print_success "Images built"
+
+  print_step 3 5 "Pulling base images..."
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" pull 2>/dev/null || true
+  print_success "Base images pulled"
+
+  print_step 4 5 "Running migrations..."
+  if [ -f "scripts/migrate.sh" ]; then
+    ENV_FILE="$ENV_FILE" bash scripts/migrate.sh
+    print_success "Migrations complete"
+  else
+    print_success "No migrations needed"
+  fi
+
+  deploy_local_services
+}
+
+# ============================================================
+#  Shared: Start Services
+# ============================================================
+deploy_local_services() {
+  print_step 5 5 "Starting services..."
+  docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+
+  echo ""
+  echo "  Waiting for services..."
+  sleep 10
+
+  if docker compose -f "$COMPOSE_FILE" ps | grep -q "unhealthy\|starting"; then
+    echo -e "  ${YELLOW}[WARN]${NC} Some services may not be healthy yet."
+    docker compose -f "$COMPOSE_FILE" ps
+  else
+    print_success "All services are running!"
+  fi
+
+  echo ""
+  echo -e "${GREEN}=========================================${NC}"
+  echo -e "${GREEN}  Deploy complete!${NC}"
+  echo -e "${GREEN}=========================================${NC}"
+}
+
+# ============================================================
+#  MAIN
+# ============================================================
+METHOD="${1:-}"
+
+# Parse method arguments
+case "$METHOD" in
+  git)
+    deploy_git
+    ;;
+  scp)
+    SCP_HOST="${2:-}"
+    SCP_PATH="${3:-}"
+    deploy_scp
+    ;;
+  rsync)
+    RSYNC_HOST="${2:-}"
+    RSYNC_PATH="${3:-}"
+    deploy_rsync
+    ;;
+  docker)
+    DOCKER_REGISTRY="${2:-}"
+    DOCKER_IMAGE="${3:-myapp}"
+    deploy_docker
+    ;;
+  ci)
+    deploy_ci
+    ;;
+  local)
+    deploy_local
+    ;;
+  "")
+    select_method
+    # Read defaults from .env.production
+    if [ -f "$ENV_FILE" ]; then
+      DEPLOY_HOST="${DEPLOY_HOST:-$(grep -E "^DEPLOY_HOST=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)}"
+      DEPLOY_PATH="${DEPLOY_PATH:-$(grep -E "^DEPLOY_PATH=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)}"
+      DOCKER_REGISTRY="${DOCKER_REGISTRY:-$(grep -E "^DOCKER_REGISTRY=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"' | tr -d "'" || true)}"
+    fi
+    case "$METHOD" in
+      git) deploy_git ;;
+      scp)
+        read -p "  Server (user@host) [$DEPLOY_HOST]: " SCP_HOST
+        SCP_HOST="${SCP_HOST:-$DEPLOY_HOST}"
+        read -p "  Path [$DEPLOY_PATH]: " SCP_PATH
+        SCP_PATH="${SCP_PATH:-$DEPLOY_PATH}"
+        deploy_scp
+        ;;
+      rsync)
+        read -p "  Server (user@host) [$DEPLOY_HOST]: " RSYNC_HOST
+        RSYNC_HOST="${RSYNC_HOST:-$DEPLOY_HOST}"
+        read -p "  Path [$DEPLOY_PATH]: " RSYNC_PATH
+        RSYNC_PATH="${RSYNC_PATH:-$DEPLOY_PATH}"
+        deploy_rsync
+        ;;
+      docker)
+        read -p "  Registry [$DOCKER_REGISTRY]: " DOCKER_REGISTRY
+        DOCKER_REGISTRY="${DOCKER_REGISTRY:-$DOCKER_REGISTRY}"
+        deploy_docker
+        ;;
+      ci) deploy_ci ;;
+      local) deploy_local ;;
+    esac
+    ;;
+  *)
+    echo "Usage: bash scripts/deploy.sh [method] [options]"
+    echo ""
+    echo "Methods:"
+    echo "  local                     - Deploy on this server"
+    echo "  git                       - Deploy via git pull"
+    echo "  scp <user>@<host> <path>  - Deploy via SCP"
+    echo "  rsync <user>@<host> <path> - Deploy via Rsync"
+    echo "  docker <registry> [image] - Deploy via Docker registry"
+    echo "  ci                        - Generate CI/CD config"
+    exit 1
+    ;;
+esac
 DEPLOYEOF
   chmod +x "$PROJECT_PATH/scripts/deploy.sh"
   log "scripts/deploy.sh"
